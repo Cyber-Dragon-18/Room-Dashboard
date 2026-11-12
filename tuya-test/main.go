@@ -229,9 +229,28 @@ func main() {
 	}
 	time.Sleep(2 * time.Second)
 
+
 	// 5. Off
 	fmt.Println("Light off")
 	if err := c.sendCommands(device, command{"switch_led", false}); err != nil {
+		log.Fatal(err)
+	}
+	time.Sleep(2 * time.Second)
+
+	// 6. On again
+	fmt.Println("Light on")
+	if err := c.sendCommands(device, command{"switch_led", true}); err != nil {
+		log.Fatal(err)
+	}
+	time.Sleep(2 * time.Second)
+
+	fmt.Println("Normal 100%")
+	err = c.sendCommands(device,
+		command{"work_mode", "white"},
+		command{"bright_value_v2", 1000},
+		command{"temp_value_v2", 850},
+	)
+	if err != nil {
 		log.Fatal(err)
 	}
 
