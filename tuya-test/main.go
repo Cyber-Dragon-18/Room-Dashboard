@@ -29,6 +29,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"github.com/joho/godotenv"
 )
 
 // Central Europe data center. Must match the one chosen in your Tuya project.
@@ -183,6 +184,9 @@ func mustEnv(name string) string {
 }
 
 func main() {
+
+	_ = godotenv.Load()
+
 	c := &tuyaClient{
 		id:     mustEnv("TUYA_ID"),
 		secret: mustEnv("TUYA_SECRET"),
