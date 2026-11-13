@@ -29,6 +29,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
 	"github.com/joho/godotenv"
 )
 
@@ -200,59 +201,59 @@ func main() {
 	}
 
 	// 2. On
-	fmt.Println("Light on")
-	if err := c.sendCommands(device, command{"switch_led", true}); err != nil {
-		log.Fatal(err)
-	}
-	time.Sleep(2 * time.Second)
-
-	// 3. Red — colour mode first, then HSV (h 0-360, s and v 0-1000)
-	fmt.Println("Red")
-	err := c.sendCommands(device,
-		command{"work_mode", "colour"},
-		command{"colour_data_v2", map[string]int{"h": 0, "s": 1000, "v": 1000}},
-	)
-	if err != nil {
-		log.Fatal(err)
-	}
-	time.Sleep(2 * time.Second)
-
-	// 4. Warm white at 50% — brightness 10-1000, temperature 0 (warm) to 1000 (cool)
-	fmt.Println("Warm white 50%")
-	err = c.sendCommands(device,
-		command{"work_mode", "white"},
-		command{"bright_value_v2", 500},
-		command{"temp_value_v2", 0},
-	)
-	if err != nil {
-		log.Fatal(err)
-	}
-	time.Sleep(2 * time.Second)
-
-
-	// 5. Off
 	fmt.Println("Light off")
 	if err := c.sendCommands(device, command{"switch_led", false}); err != nil {
 		log.Fatal(err)
 	}
 	time.Sleep(2 * time.Second)
+	/*
+		// 3. Red — colour mode first, then HSV (h 0-360, s and v 0-1000)
+		fmt.Println("Red")
+		err := c.sendCommands(device,
+			command{"work_mode", "colour"},
+			command{"colour_data_v2", map[string]int{"h": 0, "s": 1000, "v": 1000}},
+		)
+		if err != nil {
+			log.Fatal(err)
+		}
+		time.Sleep(2 * time.Second)
 
-	// 6. On again
-	fmt.Println("Light on")
-	if err := c.sendCommands(device, command{"switch_led", true}); err != nil {
-		log.Fatal(err)
-	}
-	time.Sleep(2 * time.Second)
+		// 4. Warm white at 50% — brightness 10-1000, temperature 0 (warm) to 1000 (cool)
+		fmt.Println("Warm white 50%")
+		err = c.sendCommands(device,
+			command{"work_mode", "white"},
+			command{"bright_value_v2", 500},
+			command{"temp_value_v2", 0},
+		)
+		if err != nil {
+			log.Fatal(err)
+		}
+		time.Sleep(2 * time.Second)
 
-	fmt.Println("Normal 100%")
-	err = c.sendCommands(device,
-		command{"work_mode", "white"},
-		command{"bright_value_v2", 1000},
-		command{"temp_value_v2", 850},
-	)
-	if err != nil {
-		log.Fatal(err)
-	}
 
+		// 5. Off
+		fmt.Println("Light off")
+		if err := c.sendCommands(device, command{"switch_led", false}); err != nil {
+			log.Fatal(err)
+		}
+		time.Sleep(2 * time.Second)
+
+		// 6. On again
+		fmt.Println("Light on")
+		if err := c.sendCommands(device, command{"switch_led", true}); err != nil {
+			log.Fatal(err)
+		}
+		time.Sleep(2 * time.Second)
+
+		fmt.Println("Normal 100%")
+		err = c.sendCommands(device,
+			command{"work_mode", "white"},
+			command{"bright_value_v2", 1000},
+			command{"temp_value_v2", 850},
+		)
+		if err != nil {
+			log.Fatal(err)
+		}
+	*/
 	fmt.Println("Done — Phase 0 complete!")
 }
