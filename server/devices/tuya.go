@@ -46,8 +46,25 @@ type TuyaLight struct {
 	// Cached colour, so SetBrightness can dim a coloured light
 	// without turning it white. Updated by SetColor.
 	mu      sync.Mutex
-	mode    string // "white" or "colour"
-	h, s, v int    // last HSV sent (Tuya ranges: h 0-360, s/v 0-1000)
+	mode    string    // "white" or "colour"
+	h, s, v int       // last HSV sent (Tuya ranges: h 0-360, s/v 0-1000)
+	lastCmd time.Time // when we last sent a command
+}
+
+// Tuya's status lags a moment behind commands. For this long after a
+// command, State() trusts our cache instead of the (possibly stale) status.
+const tuyaStatusLag = 5 * time.Second
+
+// send sends commands and remembers when, so State() knows the
+// status it reads right after may still be the old one.
+func (t *TuyaLight) send(cmds ...tuyaCommand) error {
+	err := t.client.sendCommands(t.deviceID, cmds...)
+	if err == nil {
+		t.mu.Lock()
+		t.lastCmd = time.Now()
+		t.mu.Unlock()
+	}
+	return err
 }
 
 // NewTuyaLight creates a driver for one Tuya device.
@@ -65,7 +82,7 @@ func NewTuyaLight(id, secret, deviceID string) *TuyaLight {
 }
 
 func (t *TuyaLight) SetPower(on bool) error {
-	return t.client.sendCommands(t.deviceID, tuyaCommand{"switch_led", on})
+	return t.send(tuyaCommand{"switch_led", on})
 }
 
 func (t *TuyaLight) SetBrightness(pct int) error {
@@ -80,7 +97,7 @@ func (t *TuyaLight) SetBrightness(pct int) error {
 	// In colour mode, brightness is the "v" of the colour.
 	if mode == "colour" {
 		v := pctToTuya(pct)
-		err := t.client.sendCommands(t.deviceID,
+		err := t.send(
 			tuyaCommand{"colour_data_v2", map[string]int{"h": h, "s": s, "v": v}},
 		)
 		if err == nil {
@@ -92,15 +109,21 @@ func (t *TuyaLight) SetBrightness(pct int) error {
 	}
 
 	// In white mode, it's bright_value_v2.
-	return t.client.sendCommands(t.deviceID,
+	err := t.send(
 		tuyaCommand{"work_mode", "white"},
 		tuyaCommand{"bright_value_v2", pctToTuya(pct)},
 	)
+	if err == nil {
+		t.mu.Lock()
+		t.mode = "white"
+		t.mu.Unlock()
+	}
+	return err
 }
 
 func (t *TuyaLight) SetColor(r, g, b uint8) error {
 	h, s, v := rgbToTuyaHSV(r, g, b)
-	err := t.client.sendCommands(t.deviceID,
+	err := t.send(
 		tuyaCommand{"work_mode", "colour"},
 		tuyaCommand{"colour_data_v2", map[string]int{"h": h, "s": s, "v": v}},
 	)
@@ -150,18 +173,25 @@ func (t *TuyaLight) State() (LightState, error) {
 	}
 
 	if mode == "colour" && hasHSV {
-		st.R, st.G, st.B = tuyaHSVToRGB(hsv.H, hsv.S, hsv.V)
+		st.R, st.G, st.B = tuyaHSVToRGB(hsv.H, hsv.S, 1000)
 		st.Brightness = tuyaToPct(hsv.V)
-		t.mu.Lock()
-		t.mode, t.h, t.s, t.v = "colour", hsv.H, hsv.S, hsv.V
-		t.mu.Unlock()
 	} else {
 		st.R, st.G, st.B = 255, 255, 255
 		st.Brightness = tuyaToPct(bright)
-		t.mu.Lock()
-		t.mode = "white"
-		t.mu.Unlock()
 	}
+
+	// Only refresh the cache from the status when no command was sent
+	// recently — otherwise the status may still show the old state, and
+	// caching it would make SetBrightness switch a coloured light to white.
+	t.mu.Lock()
+	if time.Since(t.lastCmd) > tuyaStatusLag {
+		if mode == "colour" && hasHSV {
+			t.mode, t.h, t.s, t.v = "colour", hsv.H, hsv.S, hsv.V
+		} else {
+			t.mode = "white"
+		}
+	}
+	t.mu.Unlock()
 	return st, nil
 }
 
@@ -218,11 +248,12 @@ func rgbToTuyaHSV(r, g, b uint8) (h, s, v int) {
 	s = int(math.Round(sat * 1000))
 	v = int(math.Round(max * 1000))
 	if v < 10 {
-		v = 10
+		v = 10 // Tuya's minimum brightness
 	}
 	return h, s, v
 }
 
+// tuyaHSVToRGB converts Tuya HSV back to RGB (inverse of the above).
 func tuyaHSVToRGB(h, s, v int) (r, g, b uint8) {
 	hf := float64(h)
 	sf := float64(s) / 1000
@@ -257,6 +288,9 @@ type tuyaHSV struct {
 	V int `json:"v"`
 }
 
+// parseTuyaHSV reads colour_data_v2 from a status response.
+// Tuya sometimes sends it as an object, sometimes as a JSON string
+// containing the object — this handles both.
 func parseTuyaHSV(raw json.RawMessage) (tuyaHSV, bool) {
 	var c tuyaHSV
 	if err := json.Unmarshal(raw, &c); err == nil {
@@ -271,12 +305,16 @@ func parseTuyaHSV(raw json.RawMessage) (tuyaHSV, bool) {
 	return c, false
 }
 
+// ---------------------------------------------------------------------------
+// Tuya cloud client (from your Phase 0 test, plus token refresh)
+// ---------------------------------------------------------------------------
+
 type tuyaClient struct {
 	id     string
 	secret string
 	http   *http.Client
 
-	mu        sync.Mutex
+	mu        sync.Mutex // protects token and expiresAt (many requests can run at once)
 	token     string
 	expiresAt time.Time
 }
@@ -288,6 +326,7 @@ type tuyaResponse struct {
 	Result  json.RawMessage `json:"result"`
 }
 
+// tuyaError keeps Tuya's error code so we can react to specific errors.
 type tuyaError struct {
 	Code int
 	Msg  string
@@ -309,6 +348,8 @@ func (c *tuyaClient) sendCommands(deviceID string, cmds ...tuyaCommand) error {
 	return err
 }
 
+// do makes sure there is a valid token, sends the request, and retries
+// once with a fresh token if Tuya says the token is invalid.
 func (c *tuyaClient) do(method, path string, body []byte) (*tuyaResponse, error) {
 	token, err := c.validToken()
 	if err != nil {
@@ -330,6 +371,8 @@ func (c *tuyaClient) do(method, path string, body []byte) (*tuyaResponse, error)
 	return resp, err
 }
 
+// validToken returns the cached token, or fetches a new one if it is
+// missing or expires within the next minute.
 func (c *tuyaClient) validToken() (string, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -338,13 +381,14 @@ func (c *tuyaClient) validToken() (string, error) {
 		return c.token, nil
 	}
 
+	// Token request is signed WITHOUT an access token.
 	resp, err := c.signedRequest("GET", "/v1.0/token?grant_type=1", nil, "")
 	if err != nil {
 		return "", err
 	}
 	var result struct {
 		AccessToken string `json:"access_token"`
-		ExpireTime  int    `json:"expire_time"`
+		ExpireTime  int    `json:"expire_time"` // seconds
 	}
 	if err := json.Unmarshal(resp.Result, &result); err != nil {
 		return "", err
@@ -354,6 +398,10 @@ func (c *tuyaClient) validToken() (string, error) {
 	return c.token, nil
 }
 
+// signedRequest is your Phase 0 do(): sign, send, decode.
+//
+//	stringToSign = METHOD + "\n" + sha256(body) + "\n" + "" + "\n" + path
+//	sign         = HMAC(client_id + access_token + t + stringToSign, secret)
 func (c *tuyaClient) signedRequest(method, path string, body []byte, token string) (*tuyaResponse, error) {
 	t := strconv.FormatInt(time.Now().UnixMilli(), 10)
 	stringToSign := method + "\n" + sha256Hex(string(body)) + "\n" + "" + "\n" + path
