@@ -30,12 +30,19 @@ func main() {
 	mux.HandleFunc("POST /api/device/{id}/color", handleSetColour)
 
 
-	func handleListDevices(w http.http.ResponseWriter, r *http.Request){
+	func handleListDevices(w http.ResponseWriter, r *http.Request){
 
 	}
 
+	func handleGetDevice(w http.ResponseWriter, r *http.Request) {
+	
+	}
 
-	func handleSetPower (w http.http.ResponseWriter, r *http.Request) {
+	func handleSetPower (w http.ResponseWriter, r *http.Request) {
+		
+	}
+
+	func handleSetBrightness (w http.ResponseWriter, r*http.Request) {
 		
 	}
 
