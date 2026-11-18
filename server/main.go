@@ -1,53 +1,68 @@
 package main
 
 import (
-	"fmt"
+	"context"
 	"log"
 	"net/http"
 	"os"
-	"time"
 
 	"github.com/Cyber-Dragon-18/room-dashboard/server/devices"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/joho/godotenv"
 )
 
 func main() {
 	_ = godotenv.Load()
+	ctx := context.Background()
 
-	driver := os.Getenv("DRIVER")
-	deviceID := os.Getenv("TUYA_DEVICE")
-
-	light, err := devices.NewLight(driver, deviceID)
+	// Connecrt database
+	db, err := pgxpool.New(ctx, os.Getenv("DATABASE_URL"))
 	if err != nil {
-		log.Fatal(err)
+		log.Fatal("database config: ", err)
+	}
+	defer db.Close()
+	if err := db.Ping(ctx); err != nil {
+		log.Fatal("database unreachable (is the room-db running?): ", err)
 	}
 
+	// Load the device rows
+	rows, err := loadDevices(ctx, db)
+	if err != nil {
+		log.Fatal("load devices: ", err)
+	}
+
+	// Build a driver for every light
+
+	s := &server{
+		devices: rows,
+		byID:    map[int64]deviceRow{},
+		lights:  map[int64]devices.Light{},
+	}
+	for _, row := range rows {
+		s.byID[row.ID] = row
+		if row.Type != "light" {
+			continue
+		}
+		light, err := devices.NewLight(row.Driver, row.ExternalID)
+		if err != nil {
+			log.Fatal("device %d (%s): %v", row.ID, row.Name, err)
+		}
+		s.lights[row.ID] = light
+		log.Printf("loaded light %d: %s [%s]", row.ID, row.Name, row.Driver)
+	}
+
+	// Routes
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /api/devices", handleListDevices)
-	mux.HandleFunc("GET /api/device/{id}", handleGetDevice)
-	mux.HandleFunc("POST /api/devices/{id}/power", handleSetPower)
-	mux.HandleFunc("POST /api/devices/{id}/brightness", handleSetBrightness)
-	mux.HandleFunc("POST /api/device/{id}/color", handleSetColour)
+	mux.HandleFunc("GET /api/devices", s.handleListDevices)
+	mux.HandleFunc("GET /api/devices/{id}", s.handleGetDevices)
+	mux.HandleFunc("POST /api/devices/{id}/power", s.handleSetPower)
 
-
-	func handleListDevices(w http.ResponseWriter, r *http.Request){
-
+	//Start
+	port := os.Getenv("PORT")
+	if port == "" {
+		port = "8080"
 	}
-
-	func handleGetDevice(w http.ResponseWriter, r *http.Request) {
-	
-	}
-
-	func handleSetPower (w http.ResponseWriter, r *http.Request) {
-		
-	}
-
-	func handleSetBrightness (w http.ResponseWriter, r*http.Request) {
-		
-	}
-
-	log.Println("Listening on :8080")
-	log.Fatal(http.ListenAndServe(":8080", mux))	
-
+	log.Printf("listening on %s", port)
+	log.Fatal(http.ListenAndServe(":"+port, mux))
 
 }
