@@ -45,7 +45,7 @@ func main() {
 		}
 		light, err := devices.NewLight(row.Driver, row.ExternalID)
 		if err != nil {
-			log.Fatal("device %d (%s): %v", row.ID, row.Name, err)
+			log.Fatalf("device %d (%s): %v", row.ID, row.Name, err)
 		}
 		s.lights[row.ID] = light
 		log.Printf("loaded light %d: %s [%s]", row.ID, row.Name, row.Driver)
@@ -56,6 +56,8 @@ func main() {
 	mux.HandleFunc("GET /api/devices", s.handleListDevices)
 	mux.HandleFunc("GET /api/devices/{id}", s.handleGetDevices)
 	mux.HandleFunc("POST /api/devices/{id}/power", s.handleSetPower)
+	mux.HandleFunc("POST /api/devices/{id}/bright", s.handleSetBrightness)
+	mux.HandleFunc("POST /api/devices/{id}/color", s.handleSetColor)
 
 	//Start
 	port := os.Getenv("PORT")

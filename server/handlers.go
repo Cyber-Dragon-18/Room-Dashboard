@@ -63,6 +63,64 @@ func (s *server) handleSetPower(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// POST /api/devices/{id}/bright
+func (s *server) handleSetBrightness(w http.ResponseWriter, r *http.Request) {
+	_, light, ok := s.lightFromPath(w, r)
+	if !ok {
+		return
+	}
+
+	var req struct {
+		Pct *int `json:"pct"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Pct == nil {
+		http.Error(w, `body must be {"pct": 0-100}`, http.StatusBadRequest)
+		return
+	}
+
+	if err := light.SetBrightness(*req.Pct); err != nil {
+		http.Error(w, "could not set brightness: "+err.Error(), http.StatusBadGateway)
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// POST /api/device/{id}/colour
+func (s *server) handleSetColor(w http.ResponseWriter, r *http.Request) {
+	_, light, ok := s.lightFromPath(w, r)
+	if !ok {
+		return
+	}
+
+	var req struct {
+		R *int `json:"r"`
+		G *int `json:"g"`
+		B *int `json:"b"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil ||
+		req.R == nil || req.G == nil || req.B == nil {
+		http.Error(w, `body must be {"r": 0-255, "g": 0-255, "b": 0-255}`, http.StatusBadRequest)
+		return
+	}
+
+	if !in255(*req.R) || !in255(*req.G) || !in255(*req.B) {
+		http.Error(w, "r, g and b must be between 0 and 255", http.StatusBadRequest)
+		return
+	}
+
+	if err := light.SetColor(uint8(*req.R), uint8(*req.G), uint8(*req.B)); err != nil {
+		http.Error(w, "could not set color: "+err.Error(), http.StatusBadGateway)
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func in255(v int) bool { return v >= 0 && v <= 255 }
+
 func (s *server) lightFromPath(w http.ResponseWriter, r *http.Request) (deviceRow, devices.Light, bool) {
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil {

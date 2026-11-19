@@ -8,7 +8,9 @@ type Light interface {
 }
 
 type LightState struct {
-	On         bool
-	Brightness int
-	R, G, B    uint8
+	On         bool  `json:"on"`
+	Brightness int   `json:"brightness"`
+	R          uint8 `json:"r"`
+	G          uint8 `json:"g"`
+	B          uint8 `json:"b"`
 }
