@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"log"
 	"net/http"
 	"strconv"
@@ -13,6 +14,7 @@ type server struct {
 	devices []deviceRow
 	byID    map[int64]deviceRow
 	lights  map[int64]devices.Light
+	scenes  map[string]scene
 }
 
 // GET /api/devices
@@ -120,6 +122,65 @@ func (s *server) handleSetColor(w http.ResponseWriter, r *http.Request) {
 }
 
 func in255(v int) bool { return v >= 0 && v <= 255 }
+
+// GET api/scenes
+func (s *server) handleListScenes(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, s.scenes)
+}
+
+// runScene applies every action of a scene.
+func (s *server) runScene(sc scene) []string {
+	var failed []string
+
+	for _, a := range sc.Actions {
+		light, ok := s.lights[a.DeviceID]
+		if !ok {
+			failed = append(failed, fmt.Sprintf("device %d: not found", a.DeviceID))
+			continue
+		}
+
+		// Order matters: power first, then color, then brightness.
+		if a.Power != nil {
+			if err := light.SetPower(*a.Power); err != nil {
+				failed = append(failed, fmt.Sprintf("device %d power: %v", a.DeviceID, err))
+				continue // if power failed, the rest probably will too
+			}
+		}
+		if a.Color != nil {
+			if err := light.SetColor(a.Color.R, a.Color.G, a.Color.B); err != nil {
+				failed = append(failed, fmt.Sprintf("device %d color: %v", a.DeviceID, err))
+			}
+		}
+		if a.Brightness != nil {
+			if err := light.SetBrightness(*a.Brightness); err != nil {
+				failed = append(failed, fmt.Sprintf("device %d brightness: %v", a.DeviceID, err))
+			}
+		}
+	}
+	return failed
+}
+
+// POST /api/scenes/{name}/run
+func (s *server) handleRunScene(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+
+	sc, ok := s.scenes[name]
+	if !ok {
+		http.Error(w, "scene not found", http.StatusNotFound)
+		return
+	}
+
+	failed := s.runScene(sc)
+	if len(failed) > 0 {
+		writeJSON(w, http.StatusBadGateway, map[string]any{
+			"scene":  name,
+			"errors": failed,
+		})
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
+}
 
 func (s *server) lightFromPath(w http.ResponseWriter, r *http.Request) (deviceRow, devices.Light, bool) {
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)

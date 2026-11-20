@@ -51,6 +51,16 @@ func main() {
 		log.Printf("loaded light %d: %s [%s]", row.ID, row.Name, row.Driver)
 	}
 
+	scenes, err := loadScenes(ctx, db)
+	if err != nil {
+		log.Fatal("load scenes: ", err)
+	}
+	s.scenes = map[string]scene{}
+	for _, sc := range scenes {
+		s.scenes[sc.Name] = sc
+	}
+	log.Printf("loaded %d scenes", len(s.scenes))
+
 	// Routes
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/devices", s.handleListDevices)
@@ -58,6 +68,8 @@ func main() {
 	mux.HandleFunc("POST /api/devices/{id}/power", s.handleSetPower)
 	mux.HandleFunc("POST /api/devices/{id}/bright", s.handleSetBrightness)
 	mux.HandleFunc("POST /api/devices/{id}/color", s.handleSetColor)
+	mux.HandleFunc("GET /api/scenes", s.handleListScenes)
+	mux.HandleFunc("POST /api/scenes/{name}/run", s.handleRunScene)
 
 	//Start
 	port := os.Getenv("PORT")
