@@ -18,7 +18,7 @@ type sceneAction struct {
 }
 
 type scene struct {
-	ID      int64         `json:"id`
+	ID      int64         `json:"id"`
 	Name    string        `json:"string"`
 	Actions []sceneAction `json:"actions"`
 }
