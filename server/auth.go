@@ -149,6 +149,7 @@ func (a *authStore) touch(id int64) {
 
 var publicPaths = map[string]bool{
 	"/health": true,
+	"/ws":     true,
 }
 
 func (a *authStore) middleware(next http.Handler) http.Handler {

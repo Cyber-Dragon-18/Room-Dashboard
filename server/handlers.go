@@ -15,6 +15,8 @@ type server struct {
 	byID    map[int64]deviceRow
 	lights  map[int64]devices.Light
 	scenes  map[string]scene
+	hub     *hub
+	auth    *authStore
 }
 
 // GET /api/devices
@@ -43,7 +45,7 @@ func (s *server) handleGetDevices(w http.ResponseWriter, r *http.Request) {
 
 // POST /api/devices/{id}/power
 func (s *server) handleSetPower(w http.ResponseWriter, r *http.Request) {
-	_, light, ok := s.lightFromPath(w, r)
+	row, light, ok := s.lightFromPath(w, r)
 	if !ok {
 		return
 	}
@@ -62,12 +64,18 @@ func (s *server) handleSetPower(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	s.hub.publish(event{
+		Type:     "device.updated",
+		DeviceID: row.ID,
+		Changes:  map[string]any{"on": *req.On},
+	})
+
 	w.WriteHeader(http.StatusNoContent)
 }
 
 // POST /api/devices/{id}/bright
 func (s *server) handleSetBrightness(w http.ResponseWriter, r *http.Request) {
-	_, light, ok := s.lightFromPath(w, r)
+	row, light, ok := s.lightFromPath(w, r)
 	if !ok {
 		return
 	}
@@ -86,12 +94,18 @@ func (s *server) handleSetBrightness(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	s.hub.publish(event{
+		Type:     "device.updated",
+		DeviceID: row.ID,
+		Changes:  map[string]any{"pct": *req.Pct},
+	})
+
 	w.WriteHeader(http.StatusNoContent)
 }
 
 // POST /api/device/{id}/colour
 func (s *server) handleSetColor(w http.ResponseWriter, r *http.Request) {
-	_, light, ok := s.lightFromPath(w, r)
+	row, light, ok := s.lightFromPath(w, r)
 	if !ok {
 		return
 	}
@@ -117,6 +131,14 @@ func (s *server) handleSetColor(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "could not set color: "+err.Error(), http.StatusBadGateway)
 		return
 	}
+
+	s.hub.publish(event{
+		Type:     "device.updated",
+		DeviceID: row.ID,
+		Changes: map[string]any{
+			"color": map[string]int{"r": *req.R, "g": *req.G, "b": *req.B},
+		},
+	})
 
 	w.WriteHeader(http.StatusNoContent)
 }
@@ -178,6 +200,11 @@ func (s *server) handleRunScene(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
+
+	s.hub.publish(event{
+		Type: "scene.ran",
+		Name: name,
+	})
 
 	w.WriteHeader(http.StatusNoContent)
 }

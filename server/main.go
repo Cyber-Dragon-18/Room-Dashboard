@@ -70,6 +70,11 @@ func main() {
 	}
 	log.Printf("loaded %d scenes", len(s.scenes))
 
+	h := newHub()
+	go h.run()
+	s.hub = h
+	s.auth = auth
+
 	// Routes
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
@@ -82,6 +87,7 @@ func main() {
 	mux.HandleFunc("POST /api/devices/{id}/color", s.handleSetColor)
 	mux.HandleFunc("GET /api/scenes", s.handleListScenes)
 	mux.HandleFunc("POST /api/scenes/{name}/run", s.handleRunScene)
+	mux.HandleFunc("GET /ws", s.handleWS)
 
 	//Start
 	port := os.Getenv("PORT")
