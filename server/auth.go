@@ -8,6 +8,8 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -24,7 +26,7 @@ func newToken() (string, error) {
 	return "rd_" + hex.EncodeToString(b), nil
 }
 
-func haskToken(token string) string {
+func hashToken(token string) string {
 	sum := sha256.Sum256([]byte(token))
 	return hex.EncodeToString(sum[:])
 }
@@ -111,12 +113,12 @@ func (a *authStore) check(ctx context.Context, token string) (string, bool) {
 	)
 
 	err := a.db.QueryRow(ctx, `
-		SELECT id, name FROM device_token
+		SELECT id, name FROM device_tokens
 		WHERE token_hash = $1 AND revoked_at IS NULL`,
-		haskToken(token)).Scan(&id, &name)
+		hashToken(token)).Scan(&id, &name)
 	if err != nil {
 		if !errors.Is(err, pgx.ErrNoRows) {
-			log.Printf("auth: lookup failed: %w", err)
+			log.Printf("auth: lookup failed: %v", err)
 		}
 		return "", false
 	}
@@ -147,4 +149,71 @@ func (a *authStore) touch(id int64) {
 
 var publicPaths = map[string]bool{
 	"/health": true,
+}
+
+func (a *authStore) middleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if publicPaths[r.URL.Path] {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		header := r.Header.Get("Authorization")
+		token, found := strings.CutPrefix(header, "Bearer ")
+		if !found || token == "" {
+			w.Header().Set("WWW-Authenticate", "Bearer")
+			http.Error(w, "missing token", http.StatusUnauthorized)
+			return
+		}
+
+		name, ok := a.check(r.Context(), token)
+		if !ok {
+			w.Header().Set("WWW-Authenticate", "Bearer")
+			http.Error(w, "invalid or revoked token", http.StatusUnauthorized)
+			return
+		}
+
+		ctx := context.WithValue(r.Context(), tokenNameKey{}, name)
+		next.ServeHTTP(w, r.WithContext(ctx))
+	})
+}
+
+type tokenNameKey struct{}
+
+func tokenName(r *http.Request) string {
+	name, _ := r.Context().Value(tokenNameKey{}).(string)
+	return name
+}
+
+func (a *authStore) runCommand(ctx context.Context, args []string) error {
+	if len(args) == 0 {
+		return errors.New("usage: token create <name> | token list | token revoke <name>")
+	}
+	switch args[0] {
+	case "create":
+		if len(args) < 2 {
+			return errors.New("usage: token create <name>")
+		}
+		token, err := a.create(ctx, args[1])
+		if err != nil {
+			return err
+		}
+
+		fmt.Printf("Token for %q (save it now, it won't be shown again): \n%s\n", args[1], token)
+		return nil
+
+	case "list":
+		return a.list(ctx)
+
+	case "revoke":
+		if len(args) < 2 {
+			return errors.New("usage: token revoke <name>")
+		}
+		if err := a.revoke(ctx, args[1]); err != nil {
+			return err
+		}
+		fmt.Printf("Revoked %q\n", args[1])
+		return nil
+	}
+	return fmt.Errorf("unknown token command %q", args[0])
 }

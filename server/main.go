@@ -25,6 +25,15 @@ func main() {
 		log.Fatal("database unreachable (is the room-db running?): ", err)
 	}
 
+	auth := newAuthStore(db)
+
+	if len(os.Args) > 1 && os.Args[1] == "token" {
+		if err := auth.runCommand(ctx, os.Args[2:]); err != nil {
+			log.Fatal(err)
+		}
+		return
+	}
+
 	// Load the device rows
 	rows, err := loadDevices(ctx, db)
 	if err != nil {
@@ -63,6 +72,9 @@ func main() {
 
 	// Routes
 	mux := http.NewServeMux()
+	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte("ok"))
+	})
 	mux.HandleFunc("GET /api/devices", s.handleListDevices)
 	mux.HandleFunc("GET /api/devices/{id}", s.handleGetDevices)
 	mux.HandleFunc("POST /api/devices/{id}/power", s.handleSetPower)
@@ -77,6 +89,6 @@ func main() {
 		port = "8080"
 	}
 	log.Printf("listening on %s", port)
-	log.Fatal(http.ListenAndServe(":"+port, mux))
+	log.Fatal(http.ListenAndServe(":"+port, auth.middleware(mux)))
 
 }
