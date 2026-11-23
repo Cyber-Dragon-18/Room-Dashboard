@@ -44,29 +44,24 @@ type TuyaLight struct {
 	client   *tuyaClient
 	deviceID string
 
-	// Cached colour, so SetBrightness can dim a coloured light
-	// without turning it white. Updated by SetColor.
-	mu      sync.Mutex
-	mode    string    // "white" or "colour"
-	h, s, v int       // last HSV sent (Tuya ranges: h 0-360, s/v 0-1000)
+	mu sync.Mutex
+
+	// What we believe the lamp looks like right now. Updated by every
+	// successful command, and refreshed from Tuya's status when it's safe.
+	known    LightState
+	hasKnown bool
+
+	// Raw Tuya values we need to keep between commands:
+	h, s, v     int // last colour (h 0-360, s/v 0-1000); v = colour-mode brightness
+	whiteBright int // white-mode brightness (0-100) — each mode has its own
+
 	lastCmd time.Time // when we last sent a command
 }
 
-// Tuya's status lags a moment behind commands. For this long after a
-// command, State() trusts our cache instead of the (possibly stale) status.
-const tuyaStatusLag = 5 * time.Second
-
-// send sends commands and remembers when, so State() knows the
-// status it reads right after may still be the old one.
-func (t *TuyaLight) send(cmds ...tuyaCommand) error {
-	err := t.client.sendCommands(t.deviceID, cmds...)
-	if err == nil {
-		t.mu.Lock()
-		t.lastCmd = time.Now()
-		t.mu.Unlock()
-	}
-	return err
-}
+// Tuya's status lags behind commands (often several seconds). For this long
+// after a command, State() returns what we just told the lamp instead of
+// asking Tuya — otherwise the UI would jump back to the old values.
+const tuyaStatusLag = 8 * time.Second
 
 // NewTuyaLight creates a driver for one Tuya device.
 // id and secret are the project's Access ID / Access Secret.
@@ -77,13 +72,27 @@ func NewTuyaLight(id, secret, deviceID string) *TuyaLight {
 			secret: secret,
 			http:   &http.Client{Timeout: 10 * time.Second},
 		},
-		deviceID: deviceID,
-		mode:     "white",
+		deviceID:    deviceID,
+		known:       LightState{Mode: "white", Brightness: 100, Temp: 50, R: 255, G: 255, B: 255},
+		whiteBright: 100,
 	}
 }
 
+// send sends commands; if they succeed, update() records the new state.
+func (t *TuyaLight) send(update func(), cmds ...tuyaCommand) error {
+	if err := t.client.sendCommands(t.deviceID, cmds...); err != nil {
+		return err
+	}
+	t.mu.Lock()
+	update()
+	t.lastCmd = time.Now()
+	t.mu.Unlock()
+	return nil
+}
+
 func (t *TuyaLight) SetPower(on bool) error {
-	return t.send(tuyaCommand{"switch_led", on})
+	return t.send(func() { t.known.On = on },
+		tuyaCommand{"switch_led", on})
 }
 
 func (t *TuyaLight) SetBrightness(pct int) error {
@@ -92,67 +101,72 @@ func (t *TuyaLight) SetBrightness(pct int) error {
 	}
 
 	t.mu.Lock()
-	mode, h, s := t.mode, t.h, t.s
+	mode, h, s := t.known.Mode, t.h, t.s
 	t.mu.Unlock()
 
-	// In colour mode, brightness is the "v" of the colour.
+	// Colour mode: brightness is the "v" of the colour.
 	if mode == "colour" {
 		v := pctToTuya(pct)
-		err := t.send(
-			tuyaCommand{"colour_data_v2", map[string]int{"h": h, "s": s, "v": v}},
-		)
-		if err == nil {
-			t.mu.Lock()
+		return t.send(func() {
 			t.v = v
-			t.mu.Unlock()
-		}
-		return err
+			t.known.Brightness = pct
+		}, tuyaCommand{"colour_data_v2", map[string]int{"h": h, "s": s, "v": v}})
 	}
 
-	// In white mode, it's bright_value_v2.
-	err := t.send(
-		tuyaCommand{"work_mode", "white"},
-		tuyaCommand{"bright_value_v2", pctToTuya(pct)},
-	)
-	if err == nil {
-		t.mu.Lock()
-		t.mode = "white"
-		t.mu.Unlock()
-	}
-	return err
+	// White mode: bright_value_v2.
+	return t.send(func() {
+		t.whiteBright = pct
+		t.known.Brightness = pct
+	}, tuyaCommand{"bright_value_v2", pctToTuya(pct)})
 }
 
 func (t *TuyaLight) SetColor(r, g, b uint8) error {
 	h, s, v := rgbToTuyaHSV(r, g, b)
-	err := t.send(
+
+	// Keep the current colour brightness: picking a new colour shouldn't
+	// jump back to 100%. (The colour picker always gives full-strength colours.)
+	t.mu.Lock()
+	if t.v >= 10 {
+		v = t.v
+	}
+	t.mu.Unlock()
+
+	return t.send(func() {
+		t.h, t.s, t.v = h, s, v
+		t.known.Mode = "colour"
+		t.known.R, t.known.G, t.known.B = tuyaHSVToRGB(h, s, 1000)
+		t.known.Brightness = tuyaToPct(v)
+	},
 		tuyaCommand{"work_mode", "colour"},
 		tuyaCommand{"colour_data_v2", map[string]int{"h": h, "s": s, "v": v}},
 	)
-	if err == nil {
-		t.mu.Lock()
-		t.mode, t.h, t.s, t.v = "colour", h, s, v
-		t.mu.Unlock()
-	}
-	return err
 }
 
 func (t *TuyaLight) SetWhite(tempPct int) error {
 	if tempPct < 0 || tempPct > 100 {
 		return fmt.Errorf("temperature must be 0-100, got %d", tempPct)
 	}
-	err := t.send(
+	return t.send(func() {
+		t.known.Mode = "white"
+		t.known.Temp = tempPct
+		t.known.Brightness = t.whiteBright // white mode has its own brightness
+	},
 		tuyaCommand{"work_mode", "white"},
 		tuyaCommand{"temp_value_v2", tempPct * 10}, // 0-100 -> 0-1000
 	)
-	if err == nil {
-		t.mu.Lock()
-		t.mode = "white"
-		t.mu.Unlock()
-	}
-	return err
 }
 
 func (t *TuyaLight) State() (LightState, error) {
+	// Right after a command, Tuya may still report the OLD state.
+	// Return what we just told the lamp instead.
+	t.mu.Lock()
+	if t.hasKnown && time.Since(t.lastCmd) < tuyaStatusLag {
+		st := t.known
+		t.mu.Unlock()
+		return st, nil
+	}
+	t.mu.Unlock()
+
 	resp, err := t.client.do("GET", "/v1.0/iot-03/devices/"+t.deviceID+"/status", nil)
 	if err != nil {
 		return LightState{}, err
@@ -168,7 +182,7 @@ func (t *TuyaLight) State() (LightState, error) {
 	}
 
 	var (
-		st     LightState
+		on     bool
 		mode   = "white"
 		bright = 1000
 		temp   = 500
@@ -178,7 +192,7 @@ func (t *TuyaLight) State() (LightState, error) {
 	for _, it := range items {
 		switch it.Code {
 		case "switch_led":
-			json.Unmarshal(it.Value, &st.On)
+			json.Unmarshal(it.Value, &on)
 		case "work_mode":
 			json.Unmarshal(it.Value, &mode)
 		case "bright_value_v2":
@@ -192,15 +206,12 @@ func (t *TuyaLight) State() (LightState, error) {
 		}
 	}
 
-	st.Temp = temp / 10 // 0-1000 -> 0-100
-
+	st := LightState{On: on, Temp: temp / 10, R: 255, G: 255, B: 255}
 	// The lamp remembers its last colour even in white mode, so always
-	// report it: switching back to the Colour tab then restores that colour.
-	st.R, st.G, st.B = 255, 255, 255
+	// report it: switching back to Colour then restores that colour.
 	if hasHSV {
 		st.R, st.G, st.B = tuyaHSVToRGB(hsv.H, hsv.S, 1000)
 	}
-
 	// Each mode has its OWN brightness on the lamp.
 	if mode == "colour" && hasHSV {
 		st.Mode = "colour"
@@ -210,16 +221,16 @@ func (t *TuyaLight) State() (LightState, error) {
 		st.Brightness = tuyaToPct(bright)
 	}
 
-	// Only refresh the cache from the status when no command was sent
-	// recently — otherwise the status may still show the old state, and
-	// caching it would make SetBrightness switch a coloured light to white.
 	t.mu.Lock()
-	if time.Since(t.lastCmd) > tuyaStatusLag {
-		if mode == "colour" && hasHSV {
-			t.mode, t.h, t.s, t.v = "colour", hsv.H, hsv.S, hsv.V
-		} else {
-			t.mode = "white"
+	// Only trust the status if no command was sent while we were asking.
+	if time.Since(t.lastCmd) >= tuyaStatusLag {
+		t.known, t.hasKnown = st, true
+		t.whiteBright = tuyaToPct(bright)
+		if hasHSV {
+			t.h, t.s, t.v = hsv.H, hsv.S, hsv.V
 		}
+	} else {
+		st = t.known
 	}
 	t.mu.Unlock()
 	return st, nil

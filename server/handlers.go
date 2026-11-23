@@ -97,7 +97,7 @@ func (s *server) handleSetBrightness(w http.ResponseWriter, r *http.Request) {
 	s.hub.publish(event{
 		Type:     "device.updated",
 		DeviceID: row.ID,
-		Changes:  map[string]any{"pct": *req.Pct},
+		Changes:  map[string]any{"brightness": *req.Pct},
 	})
 
 	w.WriteHeader(http.StatusNoContent)
@@ -136,6 +136,7 @@ func (s *server) handleSetColor(w http.ResponseWriter, r *http.Request) {
 		Type:     "device.updated",
 		DeviceID: row.ID,
 		Changes: map[string]any{
+			"mode":  "colour",
 			"color": map[string]int{"r": *req.R, "g": *req.G, "b": *req.B},
 		},
 	})
