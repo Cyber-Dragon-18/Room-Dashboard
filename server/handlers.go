@@ -143,6 +143,37 @@ func (s *server) handleSetColor(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+func (s *server) handleSetWhite(w http.ResponseWriter, r *http.Request) {
+	row, light, ok := s.lightFromPath(w, r)
+	if !ok {
+		return
+	}
+
+	var req struct {
+		Temp *int `json:"temp"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Temp == nil {
+		http.Error(w, `body must be {"temp": 0-100}`, http.StatusBadRequest)
+		return
+	}
+	if *req.Temp < 0 || *req.Temp > 100 {
+		http.Error(w, "temp must be between 0 (warm) and 100 (cool)", http.StatusBadRequest)
+		return
+	}
+
+	if err := light.SetWhite(*req.Temp); err != nil {
+		http.Error(w, "could not set white: "+err.Error(), http.StatusBadGateway)
+		return
+	}
+
+	s.hub.publish(event{
+		Type:     "device.updated",
+		DeviceID: row.ID,
+		Changes:  map[string]any{"mode": "white", "temp": *req.Temp},
+	})
+	w.WriteHeader(http.StatusNoContent)
+}
+
 func in255(v int) bool { return v >= 0 && v <= 255 }
 
 // GET api/scenes
@@ -161,18 +192,24 @@ func (s *server) runScene(sc scene) []string {
 			continue
 		}
 
-		// Order matters: power first, then color, then brightness.
 		if a.Power != nil {
 			if err := light.SetPower(*a.Power); err != nil {
 				failed = append(failed, fmt.Sprintf("device %d power: %v", a.DeviceID, err))
-				continue // if power failed, the rest probably will too
+				continue
 			}
 		}
-		if a.Color != nil {
+
+		switch {
+		case a.Temp != nil:
+			if err := light.SetWhite(*a.Temp); err != nil {
+				failed = append(failed, fmt.Sprintf("device %d white: %v", a.DeviceID, err))
+			}
+		case a.Color != nil:
 			if err := light.SetColor(a.Color.R, a.Color.G, a.Color.B); err != nil {
 				failed = append(failed, fmt.Sprintf("device %d color: %v", a.DeviceID, err))
 			}
 		}
+
 		if a.Brightness != nil {
 			if err := light.SetBrightness(*a.Brightness); err != nil {
 				failed = append(failed, fmt.Sprintf("device %d brightness: %v", a.DeviceID, err))
@@ -192,20 +229,12 @@ func (s *server) handleRunScene(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	failed := s.runScene(sc)
-	if len(failed) > 0 {
-		writeJSON(w, http.StatusBadGateway, map[string]any{
-			"scene":  name,
-			"errors": failed,
-		})
+	if failed := s.runScene(sc); len(failed) > 0 {
+		writeJSON(w, http.StatusBadGateway, map[string]any{"scene": name, "errors": failed})
 		return
 	}
 
-	s.hub.publish(event{
-		Type: "scene.ran",
-		Name: name,
-	})
-
+	s.hub.publish(event{Type: "scene.ran", Name: name})
 	w.WriteHeader(http.StatusNoContent)
 }
 

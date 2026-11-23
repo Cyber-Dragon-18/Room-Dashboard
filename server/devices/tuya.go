@@ -6,7 +6,8 @@ package devices
 //
 //	SetPower      -> switch_led
 //	SetBrightness -> bright_value_v2 (white mode) or the "v" of colour_data_v2 (colour mode)
-//	SetColor      -> work_mode "colour" + colour_data_v2 (HSV)
+//	SetColor      -> work_mode "colour" + colour_data_v2 (HSV, RGB LEDs)
+//	SetWhite      -> work_mode "white" + temp_value_v2 (real white LEDs)
 //	State         -> GET .../status, converted back into a LightState
 //
 // Everything lowercase in this file is internal: only TuyaLight, NewTuyaLight
@@ -135,6 +136,22 @@ func (t *TuyaLight) SetColor(r, g, b uint8) error {
 	return err
 }
 
+func (t *TuyaLight) SetWhite(tempPct int) error {
+	if tempPct < 0 || tempPct > 100 {
+		return fmt.Errorf("temperature must be 0-100, got %d", tempPct)
+	}
+	err := t.send(
+		tuyaCommand{"work_mode", "white"},
+		tuyaCommand{"temp_value_v2", tempPct * 10}, // 0-100 -> 0-1000
+	)
+	if err == nil {
+		t.mu.Lock()
+		t.mode = "white"
+		t.mu.Unlock()
+	}
+	return err
+}
+
 func (t *TuyaLight) State() (LightState, error) {
 	resp, err := t.client.do("GET", "/v1.0/iot-03/devices/"+t.deviceID+"/status", nil)
 	if err != nil {
@@ -154,6 +171,7 @@ func (t *TuyaLight) State() (LightState, error) {
 		st     LightState
 		mode   = "white"
 		bright = 1000
+		temp   = 500
 		hsv    tuyaHSV
 		hasHSV bool
 	)
@@ -165,6 +183,8 @@ func (t *TuyaLight) State() (LightState, error) {
 			json.Unmarshal(it.Value, &mode)
 		case "bright_value_v2":
 			json.Unmarshal(it.Value, &bright)
+		case "temp_value_v2":
+			json.Unmarshal(it.Value, &temp)
 		case "colour_data_v2":
 			if c, ok := parseTuyaHSV(it.Value); ok {
 				hsv, hasHSV = c, true
@@ -172,11 +192,21 @@ func (t *TuyaLight) State() (LightState, error) {
 		}
 	}
 
-	if mode == "colour" && hasHSV {
+	st.Temp = temp / 10 // 0-1000 -> 0-100
+
+	// The lamp remembers its last colour even in white mode, so always
+	// report it: switching back to the Colour tab then restores that colour.
+	st.R, st.G, st.B = 255, 255, 255
+	if hasHSV {
 		st.R, st.G, st.B = tuyaHSVToRGB(hsv.H, hsv.S, 1000)
+	}
+
+	// Each mode has its OWN brightness on the lamp.
+	if mode == "colour" && hasHSV {
+		st.Mode = "colour"
 		st.Brightness = tuyaToPct(hsv.V)
 	} else {
-		st.R, st.G, st.B = 255, 255, 255
+		st.Mode = "white"
 		st.Brightness = tuyaToPct(bright)
 	}
 

@@ -11,7 +11,7 @@ type LightFactory func(externalID string) (Light, error)
 // The registry: driver name -> how to build it.
 var lightDrivers = map[string]LightFactory{
 	"mock": func(id string) (Light, error) {
-		return &MockLight{}, nil
+		return NewMockLight(), nil
 	},
 	"tuya": func(id string) (Light, error) {
 		return NewTuyaLight(os.Getenv("TUYA_ID"), os.Getenv("TUYA_SECRET"), id), nil

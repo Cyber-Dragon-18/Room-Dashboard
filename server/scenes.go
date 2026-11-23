@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -15,19 +17,17 @@ type sceneAction struct {
 		G uint8 `json:"g"`
 		B uint8 `json:"b"`
 	} `json:"color"`
+	Temp *int `json:"temp"`
 }
 
 type scene struct {
 	ID      int64         `json:"id"`
-	Name    string        `json:"string"`
+	Name    string        `json:"name"`
 	Actions []sceneAction `json:"actions"`
 }
 
 func loadScenes(ctx context.Context, db *pgxpool.Pool) ([]scene, error) {
-	rows, err := db.Query(ctx, `
-		SELECT id, name, actions
-		FROM scenes
-		ORDER BY id`)
+	rows, err := db.Query(ctx, `SELECT id, name, actions FROM scenes ORDER BY id`)
 	if err != nil {
 		return nil, err
 	}
@@ -35,11 +35,17 @@ func loadScenes(ctx context.Context, db *pgxpool.Pool) ([]scene, error) {
 
 	var list []scene
 	for rows.Next() {
-		var s scene
-		if err := rows.Scan(&s.ID, &s.Name, &s.Actions); err != nil {
+		var (
+			sc  scene
+			raw []byte
+		)
+		if err := rows.Scan(&sc.ID, &sc.Name, &raw); err != nil {
 			return nil, err
 		}
-		list = append(list, s)
+		if err := json.Unmarshal(raw, &sc.Actions); err != nil {
+			return nil, fmt.Errorf("scene %q: bad actions JSON: %w", sc.Name, err)
+		}
+		list = append(list, sc)
 	}
 	return list, rows.Err()
 }

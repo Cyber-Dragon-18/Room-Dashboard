@@ -1,1 +1,0 @@
-adapter: adapter({ fallback: 'index.html' })
