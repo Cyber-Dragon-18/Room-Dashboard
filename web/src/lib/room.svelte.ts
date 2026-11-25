@@ -24,7 +24,9 @@ export const room = $state({
 	connected: false, // is the WebSocket open?
 	needToken: !getToken(), // true → show the token screen
 	error: '',
-	loading: false
+	loading: false,
+	// Bumped when another screen saves a layout; pages watch it and reload.
+	layoutUpdated: { page: '', count: 0 }
 });
 
 // ---------------------------------------------------------------------------
@@ -158,6 +160,10 @@ function applyEvent(event: ServerEvent): void {
 			light.state.g = c.color.g;
 			light.state.b = c.color.b;
 		}
+	}
+
+	if (event.type === 'layout.updated' && event.name) {
+		room.layoutUpdated = { page: event.name, count: room.layoutUpdated.count + 1 };
 	}
 
 	if (event.type === 'scene.ran') {

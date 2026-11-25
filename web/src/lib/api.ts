@@ -2,6 +2,7 @@
 // Components call these functions; they never use fetch() directly.
 
 import { getToken, clearToken } from './token';
+import type { PlacedWidget } from './widgets/types.ts';
 
 // ---- Types (mirror the JSON your Go server sends) ----
 
@@ -120,4 +121,25 @@ export async function setWhite(id: number, temp: number): Promise<void> {
 
 export async function runScene(name: string): Promise<void> {
 	await apiFetch(`/api/scenes/${encodeURIComponent(name)}/run`, { method: 'POST' });
+}
+
+// ---- Layouts ----
+
+// Returns null if this page was never saved (the app then uses its default).
+export async function getLayout(page: string): Promise<PlacedWidget[] | null> {
+	try {
+		const res = await apiFetch(`/api/layouts/${page}`);
+		const data: { widgets: PlacedWidget[] } = await res.json();
+		return data.widgets;
+	} catch (e) {
+		if (e instanceof Error && e.message === 'no saved layout') return null;
+		throw e;
+	}
+}
+
+export async function saveLayout(page: string, widgets: PlacedWidget[]): Promise<void> {
+	await apiFetch(`/api/layouts/${page}`, {
+		method: 'PUT',
+		body: JSON.stringify({ widgets })
+	});
 }

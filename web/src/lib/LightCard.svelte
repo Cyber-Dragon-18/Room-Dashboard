@@ -5,12 +5,12 @@
 	// It doesn't change its own state: it calls the API, and the WebSocket
 	// event updates `room`, which updates this card (and every other screen).
 	import { setPower, setBrightness, setColor, setWhite } from './api.ts';
+	import ColorPicker from './ColorPicker.svelte';
 	import {
 		handleError,
 		refreshLight,
 		rgbToHex,
-		hexToRgb,
-		tempToHex,
+				tempToHex,
 		type Light
 	} from './room.svelte.ts';
 
@@ -77,8 +77,7 @@
 		dragTemp = null;
 	}
 
-	function onColor(e: Event) {
-		const { r, g, b } = hexToRgb((e.target as HTMLInputElement).value);
+	function onColor(r: number, g: number, b: number) {
 		run(() => setColor(light.device.id, r, g, b));
 	}
 </script>
@@ -130,10 +129,13 @@
 			/>
 		</label>
 	{:else}
-		<label class="color">
-			<span>Colour</span>
-			<input type="color" value={colorHex} onchange={onColor} disabled={busy || !light.state.on} />
-		</label>
+		<ColorPicker
+			r={light.state.r}
+			g={light.state.g}
+			b={light.state.b}
+			disabled={busy || !light.state.on}
+			onpick={onColor}
+		/>
 	{/if}
 
 	<label>
@@ -249,18 +251,6 @@
 		border-radius: 50%;
 		background: var(--text);
 		border: 3px solid var(--surface);
-		cursor: pointer;
-	}
-	.color {
-		grid-template-columns: 1fr auto;
-		align-items: center;
-	}
-	input[type='color'] {
-		width: 64px;
-		height: 48px;
-		border: none;
-		border-radius: 12px;
-		background: none;
 		cursor: pointer;
 	}
 	input:disabled,

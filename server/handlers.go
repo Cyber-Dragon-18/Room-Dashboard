@@ -1,5 +1,17 @@
 package main
 
+// handlers.go — the HTTP API for devices.
+//
+//	GET  /api/devices                  list all devices
+//	GET  /api/devices/{id}             one device + its current state
+//	POST /api/devices/{id}/power       {"on": true}
+//	POST /api/devices/{id}/brightness  {"pct": 50}
+//	POST /api/devices/{id}/color       {"r": 0, "g": 0, "b": 255}   (colour mode, RGB LEDs)
+//	POST /api/devices/{id}/white       {"temp": 70}                  (white mode, 0 warm - 100 cool)
+//
+// Every command handler follows the same order:
+// read + validate → do the action → if it worked, publish the event → respond.
+
 import (
 	"encoding/json"
 	"fmt"
@@ -8,15 +20,18 @@ import (
 	"strconv"
 
 	"github.com/Cyber-Dragon-18/room-dashboard/server/devices"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
+// server holds everything the handlers need.
 type server struct {
-	devices []deviceRow
-	byID    map[int64]deviceRow
-	lights  map[int64]devices.Light
-	scenes  map[string]scene
-	hub     *hub
-	auth    *authStore
+	devices []deviceRow             // all rows, for listing
+	byID    map[int64]deviceRow     // quick lookup by id
+	lights  map[int64]devices.Light // the driver object for each light
+	scenes  map[string]scene        // scenes by name
+	hub     *hub                    // live updates (WebSocket)
+	auth    *authStore              // token checks
+	db      *pgxpool.Pool           // for things read on demand (layouts)
 }
 
 // GET /api/devices
@@ -25,25 +40,20 @@ func (s *server) handleListDevices(w http.ResponseWriter, r *http.Request) {
 }
 
 // GET /api/devices/{id}
-func (s *server) handleGetDevices(w http.ResponseWriter, r *http.Request) {
+func (s *server) handleGetDevice(w http.ResponseWriter, r *http.Request) {
 	row, light, ok := s.lightFromPath(w, r)
 	if !ok {
 		return
 	}
-
 	st, err := light.State()
 	if err != nil {
 		http.Error(w, "could not read device state: "+err.Error(), http.StatusBadGateway)
 		return
 	}
-
-	writeJSON(w, http.StatusOK, map[string]any{
-		"device": row,
-		"state":  st,
-	})
+	writeJSON(w, http.StatusOK, map[string]any{"device": row, "state": st})
 }
 
-// POST /api/devices/{id}/power
+// POST /api/devices/{id}/power   {"on": true}
 func (s *server) handleSetPower(w http.ResponseWriter, r *http.Request) {
 	row, light, ok := s.lightFromPath(w, r)
 	if !ok {
@@ -53,7 +63,6 @@ func (s *server) handleSetPower(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		On *bool `json:"on"`
 	}
-
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.On == nil {
 		http.Error(w, `body must be {"on": true} or {"on": false}`, http.StatusBadRequest)
 		return
@@ -69,11 +78,10 @@ func (s *server) handleSetPower(w http.ResponseWriter, r *http.Request) {
 		DeviceID: row.ID,
 		Changes:  map[string]any{"on": *req.On},
 	})
-
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// POST /api/devices/{id}/bright
+// POST /api/devices/{id}/brightness   {"pct": 50}
 func (s *server) handleSetBrightness(w http.ResponseWriter, r *http.Request) {
 	row, light, ok := s.lightFromPath(w, r)
 	if !ok {
@@ -83,9 +91,12 @@ func (s *server) handleSetBrightness(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Pct *int `json:"pct"`
 	}
-
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Pct == nil {
 		http.Error(w, `body must be {"pct": 0-100}`, http.StatusBadRequest)
+		return
+	}
+	if *req.Pct < 0 || *req.Pct > 100 {
+		http.Error(w, "pct must be between 0 and 100", http.StatusBadRequest)
 		return
 	}
 
@@ -99,11 +110,10 @@ func (s *server) handleSetBrightness(w http.ResponseWriter, r *http.Request) {
 		DeviceID: row.ID,
 		Changes:  map[string]any{"brightness": *req.Pct},
 	})
-
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// POST /api/device/{id}/colour
+// POST /api/devices/{id}/color   {"r": 0, "g": 0, "b": 255}
 func (s *server) handleSetColor(w http.ResponseWriter, r *http.Request) {
 	row, light, ok := s.lightFromPath(w, r)
 	if !ok {
@@ -115,13 +125,12 @@ func (s *server) handleSetColor(w http.ResponseWriter, r *http.Request) {
 		G *int `json:"g"`
 		B *int `json:"b"`
 	}
-
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil ||
 		req.R == nil || req.G == nil || req.B == nil {
 		http.Error(w, `body must be {"r": 0-255, "g": 0-255, "b": 0-255}`, http.StatusBadRequest)
 		return
 	}
-
+	// Check the range before converting: uint8(300) would silently become 44
 	if !in255(*req.R) || !in255(*req.G) || !in255(*req.B) {
 		http.Error(w, "r, g and b must be between 0 and 255", http.StatusBadRequest)
 		return
@@ -136,14 +145,14 @@ func (s *server) handleSetColor(w http.ResponseWriter, r *http.Request) {
 		Type:     "device.updated",
 		DeviceID: row.ID,
 		Changes: map[string]any{
-			"mode":  "colour",
+			"mode":  "colour", // the lamp switched to its RGB LEDs
 			"color": map[string]int{"r": *req.R, "g": *req.G, "b": *req.B},
 		},
 	})
-
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// POST /api/devices/{id}/white   {"temp": 70}   0 = warm, 100 = cool
 func (s *server) handleSetWhite(w http.ResponseWriter, r *http.Request) {
 	row, light, ok := s.lightFromPath(w, r)
 	if !ok {
@@ -175,9 +184,6 @@ func (s *server) handleSetWhite(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func in255(v int) bool { return v >= 0 && v <= 255 }
-
-// GET api/scenes
 func (s *server) handleListScenes(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, s.scenes)
 }
@@ -239,32 +245,34 @@ func (s *server) handleRunScene(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+func in255(v int) bool { return v >= 0 && v <= 255 }
+
+// lightFromPath reads {id} from the URL and finds that light.
+// If anything is wrong it writes the error response itself and returns ok=false.
 func (s *server) lightFromPath(w http.ResponseWriter, r *http.Request) (deviceRow, devices.Light, bool) {
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil {
 		http.Error(w, "device id must be a number", http.StatusBadRequest)
 		return deviceRow{}, nil, false
 	}
-
 	row, found := s.byID[id]
 	if !found {
 		http.Error(w, "device not found", http.StatusNotFound)
 		return deviceRow{}, nil, false
 	}
-
 	light, isLight := s.lights[id]
 	if !isLight {
 		http.Error(w, "device is not a light", http.StatusBadRequest)
 		return deviceRow{}, nil, false
 	}
-
 	return row, light, true
 }
 
+// writeJSON sends v as JSON with the given status code.
 func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	if err := json.NewEncoder(w).Encode(v); err != nil {
-		log.Printf("writeJSON; %v", err)
+		log.Printf("writeJSON: %v", err)
 	}
 }
